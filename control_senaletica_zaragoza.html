@@ -1351,6 +1351,26 @@
     }catch(err){ return []; }
   }
 
+  // Look for pre-placed photo files next to this HTML, in a "fotos/" folder,
+  // named "<codigo>__1.jpg", "<codigo>__2.jpg", etc. (up to MAX_FOLDER_PHOTOS).
+  // This lets photos be delivered as normal files (e.g. via GitHub) instead of
+  // depending on browser storage, which has a small size limit.
+  const MAX_FOLDER_PHOTOS = 10;
+  function probeFolderPhotos(codigo){
+    const base = codigo.split('__')[0]; // strip the "__N" card-uniqueness suffix, keep just the real código
+    const tries = [];
+    for(let i = 1; i <= MAX_FOLDER_PHOTOS; i++){
+      tries.push(new Promise(resolve => {
+        const url = `fotos/${encodeURIComponent(base)}__${i}.jpg`;
+        const img = new Image();
+        img.onload = () => resolve(url);
+        img.onerror = () => resolve(null);
+        img.src = url;
+      }));
+    }
+    return Promise.all(tries).then(results => results.filter(Boolean));
+  }
+
   function setPhotos(key, arr){
     try{
       localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(arr));
@@ -1386,7 +1406,16 @@
 
   function renderGallery(slot){
     const key = slot.dataset.photoKey;
-    const photos = getPhotos(key);
+    const uploaded = getPhotos(key);
+
+    probeFolderPhotos(key).then(folderPhotos => {
+      // folder photos first (the "official" delivered set), then anything uploaded in-browser
+      const photos = folderPhotos.concat(uploaded);
+      paintGallery(slot, photos, folderPhotos.length);
+    });
+  }
+
+  function paintGallery(slot, photos, folderCount){
 
     if(photos.length === 0){
       slot.classList.remove('has-photo');
@@ -1403,14 +1432,17 @@
 
     slot.classList.add('has-photo');
     slot.classList.remove('is-empty');
-    const thumbs = photos.map((src, i) => `
-      <div class="photo-thumb" data-idx="${i}">
+    const thumbs = photos.map((src, i) => {
+      const fromFolder = i < folderCount;
+      return `
+      <div class="photo-thumb${fromFolder ? ' photo-thumb--folder' : ''}" data-idx="${i}">
         <img src="${src}" alt="Evidencia ${i+1}" onerror="this.closest('.photo-thumb').classList.add('photo-error')">
-        <button type="button" class="photo-remove" data-idx="${i}" title="Quitar foto">✕</button>
-      </div>`).join('');
+        ${fromFolder ? '' : `<button type="button" class="photo-remove" data-idx="${i}" title="Quitar foto">✕</button>`}
+      </div>`;
+    }).join('');
 
     slot.innerHTML = `
-      <div class="photo-count"><span>${photos.length} foto${photos.length>1?'s':''}</span></div>
+      <div class="photo-count"><span>${photos.length} foto${photos.length>1?'s':''}${folderCount ? ` (${folderCount} de carpeta)` : ''}</span></div>
       <div class="photo-gallery">
         ${thumbs}
         <label class="photo-add-tile">
@@ -1419,7 +1451,7 @@
           <span>Agregar</span>
         </label>
       </div>`;
-    bindPhotoEvents(slot);
+    bindPhotoEvents(slot, folderCount);
   }
 
   // Preflight-check whether Worker-from-blob is usable in this environment
@@ -1507,7 +1539,7 @@
     }
   });
 
-  function bindPhotoEvents(slot){
+  function bindPhotoEvents(slot, folderCount = 0){
     slot.querySelectorAll('.photo-input').forEach(input => {
       input.addEventListener('change', (e) => {
         addFiles(slot, e.target.files);
@@ -1526,7 +1558,7 @@
     slot.querySelectorAll('.photo-remove').forEach(btn => {
       btn.addEventListener('click', (e) => {
         e.preventDefault(); e.stopPropagation();
-        const idx = parseInt(btn.dataset.idx, 10);
+        const idx = parseInt(btn.dataset.idx, 10) - folderCount; // adjust for folder photos prepended
         const key = slot.dataset.photoKey;
         const photos = getPhotos(key);
         photos.splice(idx, 1);
